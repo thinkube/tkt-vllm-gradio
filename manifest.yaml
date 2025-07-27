@@ -1,0 +1,21 @@
+apiVersion: thinkube.io/v1
+kind: TemplateManifest
+metadata:
+  name: tkt-vllm-gradio
+  title: AI Model Inference Server
+  description: Deploy text generation or image generation models with Gradio UI
+  version: 1.0.0
+  author: Thinkube Team
+  tags: ["ai", "llm", "gradio", "inference", "text-generation", "text-to-image"]
+
+parameters:
+  - name: model_id
+    type: str
+    description: Hugging Face model ID (e.g., microsoft/phi-2, runwayml/stable-diffusion-v1-5)
+    pattern: "^[a-zA-Z0-9-]+/[a-zA-Z0-9._-]+$"
+    
+  - name: model_type
+    type: choice
+    description: Type of model to deploy
+    choices: ["chat", "text-to-image"]
+    default: "chat"

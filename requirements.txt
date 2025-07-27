@@ -1,0 +1,5 @@
+# Template-specific dependencies only
+# All common ML/AI packages are in ai-inference-base image
+
+# Only add packages that are specific to this template's needs
+# For example, if using a specific model that needs extra dependencies
