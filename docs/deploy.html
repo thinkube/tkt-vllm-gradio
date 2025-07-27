@@ -161,19 +161,19 @@
         <p class="subtitle">Enter your Thinkube instance domain to deploy this template</p>
         
         <div class="template-info">
-            <h3>AI Model Inference Server</h3>
-            <p>Deploy text generation or image generation models with Gradio UI</p>
+            <h3>vLLM Inference Server</h3>
+            <p>High-performance text generation with vLLM engine</p>
             <div class="features">
-                <span class="feature-badge">Hugging Face Models</span>
+                <span class="feature-badge">vLLM Engine</span>
                 <span class="feature-badge">Gradio UI</span>
-                <span class="feature-badge">GPU Support</span>
-                <span class="feature-badge">Chat & Text-to-Image</span>
+                <span class="feature-badge">RTX 3090+ Only</span>
+                <span class="feature-badge">PagedAttention</span>
             </div>
         </div>
         
         <div class="gpu-warning">
             <strong>⚠️ GPU Required</strong>
-            This template requires a GPU node in your Thinkube cluster. Tested with GTX 1080 (8GB) and RTX 3090 (24GB).
+            This template requires an Ampere+ GPU (RTX 3090, RTX 4090, A100, etc.). Will NOT work on GTX 1080 or RTX 2080.
         </div>
         
         <form id="deployForm">

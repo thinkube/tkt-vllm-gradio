@@ -5,7 +5,7 @@
 ## 🤖 Model Information
 
 - **Model ID**: `{{ model_id }}`
-- **Model Type**: `{{ model_type }}`
+- **Engine**: vLLM (high-performance inference)
 - **Deployed on**: Thinkube platform
 
 ## 🌐 Access Points
@@ -21,12 +21,11 @@ This application runs on GPU nodes with the following configuration:
 - **Port**: 7860
 - **Health Check**: Enabled
 
-{% if model_type == "chat" %}
 ## 💬 Chat Interface
 
 Access the Gradio chat interface to interact with the model. Features include:
-- Streaming responses
-- Temperature control
+- High-performance vLLM inference
+- Temperature control  
 - Token limit adjustment
 - Conversation history
 
@@ -35,25 +34,11 @@ Example prompts:
 - "Write a Python function to sort a list"
 - "Tell me a story about a robot"
 
-{% elif model_type == "text-to-image" %}
-## 🎨 Image Generation
-
-Use the Gradio interface to generate images from text prompts. Features include:
-- Multiple image sizes (512x512, 768x768, etc.)
-- Negative prompt support
-- Guidance scale adjustment
-- Batch generation
-
-Example prompts:
-- "A serene mountain landscape at sunset"
-- "A futuristic city with flying cars"
-- "A cute robot playing guitar, cartoon style"
-{% endif %}
-
 ## 🔧 Configuration
 
 The model is configured with the following settings:
-- **Device**: CUDA (GPU) if available, CPU fallback
+- **Engine**: vLLM with PagedAttention
+- **Device**: CUDA (Ampere+ GPU required)
 - **Cache Directory**: `/app/cache`
 - **Model Loading**: Automatic on startup
 
