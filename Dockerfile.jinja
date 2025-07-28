@@ -1,4 +1,4 @@
-FROM {{ harbor_registry }}/library/ai-inference-base:latest
+FROM {{ container_registry }}/library/ai-inference-base:latest
 
 # Copy application code
 COPY server.py .
