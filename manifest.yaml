@@ -13,4 +13,9 @@ parameters:
     type: str
     description: Hugging Face model ID (e.g., mistralai/Mistral-7B-Instruct-v0.2)
     pattern: "^[a-zA-Z0-9-]+/[a-zA-Z0-9._-]+$"
+
+secrets:
+  - name: HUGGINGFACE_TOKEN
+    description: Hugging Face API token for accessing gated models
+    required: true
     
