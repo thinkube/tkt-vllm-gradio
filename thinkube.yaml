@@ -8,7 +8,7 @@ spec:
     - name: inference
       build: .
       port: 7860
-      size: large
+      size: xlarge
       health: /health
       test:
         enabled: false  # Testing ML models requires GPU, skip in CI/CD
