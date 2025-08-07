@@ -9,6 +9,9 @@ spec:
       build: .
       port: 7860
       size: xlarge
+      gpu:
+        count: 1
+        memory: "20Gi"  # Mistral 7B needs ~20GB GPU memory
       health: /health
       test:
         enabled: false  # Testing ML models requires GPU, skip in CI/CD
