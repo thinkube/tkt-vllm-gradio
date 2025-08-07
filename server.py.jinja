@@ -25,17 +25,18 @@ llm = LLM(model=MODEL_ID, dtype="float16", max_model_len=8192)
 
 def generate_response(message: str, history: list, temperature: float = 0.7, max_tokens: int = 512):
     """Generate response using vLLM"""
-    # Build prompt from history
+    # Build prompt from history - Mistral Instruct format
     prompt = ""
     for human, assistant in history:
-        prompt += f"User: {human}\nAssistant: {assistant}\n"
-    prompt += f"User: {message}\nAssistant:"
+        prompt += f"[INST] {human} [/INST] {assistant}</s>"
+    prompt += f"[INST] {message} [/INST]"
     
-    # vLLM sampling parameters
+    # vLLM sampling parameters with stop tokens
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.95,
         max_tokens=max_tokens,
+        stop=["</s>", "[INST]", "User:"],  # Stop tokens to prevent continuation
     )
     
     # Generate with vLLM
