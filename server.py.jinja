@@ -52,9 +52,9 @@ demo = gr.ChatInterface(
     title="{{ project_title | default(project_name) }}",
     description=f"Chat with {MODEL_ID} (powered by vLLM)",
     examples=[
-        "Hello! How are you?",
-        "Can you explain quantum computing in simple terms?",
-        "Write a Python function to calculate fibonacci numbers",
+        ["Hello! How are you?", 0.7, 512],
+        ["Can you explain quantum computing in simple terms?", 0.7, 512],
+        ["Write a Python function to calculate fibonacci numbers", 0.7, 512],
     ],
     theme="soft",
     analytics_enabled=False,
