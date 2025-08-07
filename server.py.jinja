@@ -19,7 +19,9 @@ app = FastAPI(title="{{ project_name }} vLLM Server")
 from vllm import LLM, SamplingParams
 
 print(f"Loading model with vLLM: {MODEL_ID}")
-llm = LLM(model=MODEL_ID, dtype="float16")
+# Set max_model_len to fit in GPU memory (RTX 3090 with 24GB)
+# Default would be 32768 for Mistral, but that requires more memory
+llm = LLM(model=MODEL_ID, dtype="float16", max_model_len=8192)
 
 def generate_response(message: str, history: list, temperature: float = 0.7, max_tokens: int = 512):
     """Generate response using vLLM"""
