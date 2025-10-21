@@ -1,0 +1,17 @@
+FROM {{ container_registry }}/library/ai-inference-base:latest
+
+# Copy application code
+COPY server.py .
+
+# Copy and install any template-specific requirements
+COPY requirements.txt .
+RUN if [ -s requirements.txt ]; then pip install --no-cache-dir --break-system-packages -r requirements.txt; fi
+
+# The base image already has:
+# - Working directory set to /app
+# - Cache directories created
+# - Environment variables set
+# - Python packages pre-installed
+
+# Run the application
+CMD ["python3", "server.py"]

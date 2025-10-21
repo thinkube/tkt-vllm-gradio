@@ -1,0 +1,21 @@
+apiVersion: thinkube.io/v1
+kind: TemplateManifest
+metadata:
+  name: tkt-vllm-gradio
+  title: vLLM Inference Server
+  description: High-performance text generation with vLLM engine (requires RTX 3090+)
+  version: 1.0.0
+  author: Thinkube Team
+  tags: ["ai", "llm", "vllm", "gradio", "inference", "text-generation", "gpu"]
+
+parameters:
+  - name: model_id
+    type: str
+    description: Hugging Face model ID (e.g., mistralai/Mistral-7B-Instruct-v0.2)
+    pattern: "^[a-zA-Z0-9-]+/[a-zA-Z0-9._-]+$"
+
+secrets:
+  - name: HF_TOKEN
+    description: Hugging Face API token for accessing gated models
+    required: true
+    
