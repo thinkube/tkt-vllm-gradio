@@ -1,4 +1,5 @@
-FROM {{ container_registry }}/library/vllm-base:0.11-cuda13.0-py3.12
+ARG CONTAINER_REGISTRY
+FROM ${CONTAINER_REGISTRY}/library/vllm-base:0.11-cuda13.0-py3.12
 
 # Copy application code
 COPY server.py .

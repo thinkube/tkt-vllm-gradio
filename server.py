@@ -9,11 +9,13 @@ import gradio as gr
 from fastapi import FastAPI
 import uvicorn
 
-# Model configuration from template
-MODEL_ID = "{{ model_id }}"
+# Model configuration from environment
+MODEL_ID = os.environ.get("MODEL_ID", "mistralai/Mistral-7B-Instruct-v0.2")
+APP_NAME = os.environ.get("APP_NAME", "vllm-server")
+APP_TITLE = os.environ.get("APP_TITLE", APP_NAME)
 
 # Initialize FastAPI app
-app = FastAPI(title="{{ project_name }} vLLM Server")
+app = FastAPI(title=f"{APP_NAME} vLLM Server")
 
 # vLLM for text generation (requires Ampere+ GPU)
 from vllm import LLM, SamplingParams
@@ -30,7 +32,7 @@ def generate_response(message: str, history: list, temperature: float = 0.7, max
     for human, assistant in history:
         prompt += f"[INST] {human} [/INST] {assistant}</s>"
     prompt += f"[INST] {message} [/INST]"
-    
+
     # vLLM sampling parameters with stop tokens
     sampling_params = SamplingParams(
         temperature=temperature,
@@ -38,11 +40,11 @@ def generate_response(message: str, history: list, temperature: float = 0.7, max
         max_tokens=max_tokens,
         stop=["</s>", "[INST]", "User:"],  # Stop tokens to prevent continuation
     )
-    
+
     # Generate with vLLM
     outputs = llm.generate([prompt], sampling_params)
     response = outputs[0].outputs[0].text
-    
+
     # For streaming effect in Gradio
     for i in range(0, len(response), 5):
         yield response[:i+5]
@@ -50,7 +52,7 @@ def generate_response(message: str, history: list, temperature: float = 0.7, max
 # Create Gradio interface
 demo = gr.ChatInterface(
     generate_response,
-    title="{{ project_title | default(project_name) }}",
+    title=APP_TITLE,
     description=f"Chat with {MODEL_ID} (powered by vLLM)",
     examples=[
         ["Hello! How are you?", 0.7, 512],
