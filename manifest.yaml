@@ -3,7 +3,7 @@ kind: TemplateManifest
 metadata:
   name: tkt-vllm-gradio
   title: vLLM Inference Server
-  description: High-performance text generation with vLLM engine (requires RTX 3090+)
+  description: High-performance text generation with vLLM engine (GPU required)
   version: 1.0.0
   author: Alejandro Martínez Corriá
   tags: ["ai", "llm", "vllm", "gradio", "inference", "text-generation", "gpu"]

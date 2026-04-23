@@ -1,63 +1,55 @@
 #!/usr/bin/env python3
-"""
-vLLM Inference Server with Gradio UI
-For text generation models on supported GPUs (RTX 3090+)
-"""
+"""vLLM Inference Server with Gradio UI"""
 
 import os
 import gradio as gr
 from fastapi import FastAPI
 import uvicorn
+from vllm import LLM, SamplingParams
 
-# Model configuration from environment
 MODEL_ID = os.environ.get("MODEL_ID", "mistralai/Mistral-7B-Instruct-v0.2")
 APP_NAME = os.environ.get("APP_NAME", "vllm-server")
 APP_TITLE = os.environ.get("APP_TITLE", APP_NAME)
 
-# Initialize FastAPI app
 app = FastAPI(title=f"{APP_NAME} vLLM Server")
 
-# vLLM for text generation (requires Ampere+ GPU)
-from vllm import LLM, SamplingParams
-
 print(f"Loading model with vLLM: {MODEL_ID}")
-# Set max_model_len to fit in GPU memory (RTX 3090 with 24GB)
-# Default would be 32768 for Mistral, but that requires more memory
-llm = LLM(model=MODEL_ID, dtype="float16", max_model_len=8192)
+llm = LLM(model=MODEL_ID, dtype="auto")
+tokenizer = llm.get_tokenizer()
 
-def generate_response(message: str, history: list, temperature: float = 0.7, max_tokens: int = 512):
-    """Generate response using vLLM"""
-    # Build prompt from history - Mistral Instruct format
-    prompt = ""
-    for human, assistant in history:
-        prompt += f"[INST] {human} [/INST] {assistant}</s>"
-    prompt += f"[INST] {message} [/INST]"
 
-    # vLLM sampling parameters with stop tokens
+def generate_response(message, history, temperature=0.7, max_tokens=512):
+    messages = []
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": message})
+
+    prompt = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True
+    )
+
     sampling_params = SamplingParams(
         temperature=temperature,
         top_p=0.95,
         max_tokens=max_tokens,
-        stop=["</s>", "[INST]", "User:"],  # Stop tokens to prevent continuation
     )
 
-    # Generate with vLLM
     outputs = llm.generate([prompt], sampling_params)
     response = outputs[0].outputs[0].text
 
-    # For streaming effect in Gradio
     for i in range(0, len(response), 5):
-        yield response[:i+5]
+        yield response[: i + 5]
 
-# Create Gradio interface
+
 demo = gr.ChatInterface(
     generate_response,
+    type="messages",
     title=APP_TITLE,
     description=f"Chat with {MODEL_ID} (powered by vLLM)",
     examples=[
-        ["Hello! How are you?", 0.7, 512],
-        ["Can you explain quantum computing in simple terms?", 0.7, 512],
-        ["Write a Python function to calculate fibonacci numbers", 0.7, 512],
+        {"text": "Hello! How are you?"},
+        {"text": "Can you explain quantum computing in simple terms?"},
+        {"text": "Write a Python function to calculate fibonacci numbers"},
     ],
     theme="soft",
     analytics_enabled=False,
@@ -67,23 +59,13 @@ demo = gr.ChatInterface(
     ],
 )
 
-# Health check endpoint
+
 @app.get("/health")
 async def health_check():
-    return {
-        "status": "healthy",
-        "model": MODEL_ID,
-        "engine": "vLLM"
-    }
+    return {"status": "healthy", "model": MODEL_ID, "engine": "vLLM"}
 
-# Mount Gradio app
+
 app = gr.mount_gradio_app(app, demo, path="/")
 
 if __name__ == "__main__":
-    # Run the server
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=7860,
-        log_level="info",
-    )
+    uvicorn.run(app, host="0.0.0.0", port=7860, log_level="info")

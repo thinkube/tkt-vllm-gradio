@@ -1,3 +1,1 @@
-# vLLM - High-performance inference engine
-# Requires Ampere+ GPU (RTX 3090, A100, etc.)
-vllm>=0.5.0
+# vLLM is provided by the base image — do not add it here
