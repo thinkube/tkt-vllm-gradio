@@ -3,19 +3,15 @@ kind: TemplateManifest
 metadata:
   name: tkt-vllm-gradio
   title: vLLM Inference Server
-  description: High-performance text generation with vLLM engine (GPU required)
+  description: High-performance LLM inference with vLLM engine — model managed by LLM Gateway
   version: 1.0.0
   author: Alejandro Martínez Corriá
-  tags: ["ai", "llm", "vllm", "gradio", "inference", "text-generation", "gpu"]
+  tags: ["ai", "llm", "vllm", "inference", "text-generation", "gpu"]
 
-parameters:
-  - name: model_id
-    type: str
-    description: Hugging Face model ID (e.g., mistralai/Mistral-7B-Instruct-v0.2)
-    pattern: "^[a-zA-Z0-9-]+/[a-zA-Z0-9._-]+$"
+parameters: []
 
 secrets:
   - name: HF_TOKEN
-    description: Hugging Face API token for accessing gated models
-    required: true
-    
+    description: Hugging Face API token — required at runtime for gated models (Llama, Mistral, etc.)
+    required: false
+
