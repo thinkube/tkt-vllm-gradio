@@ -1,57 +1,442 @@
 #!/usr/bin/env python3
-"""vLLM Inference Server with Gradio UI"""
+"""
+vLLM Inference Server with Gradio UI and Admin Management Endpoints
+Uses vllm serve as a subprocess for model switching support
+"""
 
 import os
+import time
+import signal
+import logging
+import subprocess
+
+import httpx
+import requests as req_lib
 import gradio as gr
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
-from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+from thinkube_theme import create_thinkube_theme, THINKUBE_CSS
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ.get("MODEL_ID", "mistralai/Mistral-7B-Instruct-v0.2")
+MODEL_PATH = os.environ.get("MODEL_PATH")
 APP_NAME = os.environ.get("APP_NAME", "vllm-server")
 APP_TITLE = os.environ.get("APP_TITLE", APP_NAME)
 
+VLLM_BACKEND_URL = "http://127.0.0.1:8355"
+VLLM_PID_FILE = "/tmp/vllm.pid"
+
 app = FastAPI(title=f"{APP_NAME} vLLM Server")
 
-print(f"Loading model with vLLM: {MODEL_ID}")
-llm = LLM(model=MODEL_ID, dtype="auto")
-tokenizer = llm.get_tokenizer()
+backend_start_time = None
+is_switching = False
+tokenizer = None
+http_client = None
+sync_http_client = None
 
 
-def generate_response(message, history, temperature=0.7, max_tokens=512):
+def query_mlflow(model_id: str) -> str:
+    """Query MLflow to get the JuiceFS artifact path for a model."""
+    token_response = req_lib.post(
+        os.environ['MLFLOW_KEYCLOAK_TOKEN_URL'],
+        data={
+            'grant_type': 'password',
+            'client_id': os.environ['MLFLOW_KEYCLOAK_CLIENT_ID'],
+            'client_secret': os.environ['MLFLOW_CLIENT_SECRET'],
+            'username': os.environ['MLFLOW_AUTH_USERNAME'],
+            'password': os.environ['MLFLOW_AUTH_PASSWORD'],
+            'scope': 'openid'
+        },
+        verify=False,
+        timeout=30
+    )
+    token_response.raise_for_status()
+    access_token = token_response.json()['access_token']
+
+    model_name = model_id.replace('/', '-')
+    mlflow_url = os.environ.get('MLFLOW_TRACKING_URI', 'http://mlflow.mlflow.svc.cluster.local:5000')
+
+    response = req_lib.get(
+        f"{mlflow_url}/api/2.0/mlflow/model-versions/search",
+        params={'filter': f"name='{model_name}'"},
+        headers={'Authorization': f'Bearer {access_token}'},
+        verify=False,
+        timeout=30
+    )
+    response.raise_for_status()
+
+    versions = response.json().get('model_versions', [])
+    if not versions:
+        raise ValueError(f"Model {model_name} not found in MLflow registry")
+
+    latest = max(versions, key=lambda v: int(v['version']))
+    run_id = latest['run_id']
+
+    run_response = req_lib.get(
+        f"{mlflow_url}/api/2.0/mlflow/runs/get",
+        params={'run_id': run_id},
+        headers={'Authorization': f'Bearer {access_token}'},
+        verify=False,
+        timeout=30
+    )
+    run_response.raise_for_status()
+    experiment_id = run_response.json()['run']['info']['experiment_id']
+
+    model_path = f'/mlflow-models/artifacts/{experiment_id}/{run_id}/artifacts/model'
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"Model path does not exist: {model_path}")
+
+    return model_path
+
+
+def stop_backend():
+    """Stop the current vllm subprocess using the PID file."""
+    try:
+        with open(VLLM_PID_FILE) as f:
+            pid = int(f.read().strip())
+        logger.info(f"Stopping vllm serve (PID {pid})...")
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(60):
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.5)
+            except ProcessLookupError:
+                break
+        else:
+            logger.warning(f"Force-killing vllm serve (PID {pid})")
+            try:
+                os.kill(pid, signal.SIGKILL)
+                time.sleep(1)
+            except ProcessLookupError:
+                pass
+        logger.info("vllm serve stopped")
+    except (FileNotFoundError, ValueError, ProcessLookupError):
+        logger.info("No running vllm backend found")
+
+
+def start_backend(model_path: str, model_id: str) -> subprocess.Popen:
+    """Start vllm serve as a background subprocess."""
+    cmd = [
+        "vllm", "serve", model_path,
+        "--host", "127.0.0.1",
+        "--port", "8355",
+        "--dtype", "auto",
+        "--served-model-name", model_id,
+    ]
+    logger.info(f"Starting vllm serve: {' '.join(cmd)}")
+    proc = subprocess.Popen(cmd)
+    with open(VLLM_PID_FILE, 'w') as f:
+        f.write(str(proc.pid))
+    return proc
+
+
+def wait_for_backend(timeout: int = 600) -> bool:
+    """Wait for vllm serve to become healthy."""
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            r = req_lib.get(f"{VLLM_BACKEND_URL}/health", timeout=5)
+            if r.status_code == 200:
+                return True
+        except req_lib.ConnectionError:
+            pass
+        time.sleep(5)
+    return False
+
+
+def initialize():
+    """Initialize tokenizer and HTTP clients."""
+    global tokenizer, http_client, sync_http_client, backend_start_time
+    logger.info(f"Model ID: {MODEL_ID}")
+    logger.info(f"Model path: {MODEL_PATH}")
+    logger.info(f"Backend URL: {VLLM_BACKEND_URL}")
+
+    if MODEL_PATH:
+        logger.info("Loading tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+        logger.info("Tokenizer loaded")
+
+    http_client = httpx.AsyncClient(
+        base_url=VLLM_BACKEND_URL,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
+    sync_http_client = httpx.Client(
+        base_url=VLLM_BACKEND_URL,
+        timeout=httpx.Timeout(300.0, connect=10.0),
+    )
+
+    backend_start_time = time.time()
+
+
+# ============================================================================
+# Health Check
+# ============================================================================
+
+@app.get("/health")
+async def health_check():
+    if is_switching:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "reason": "model_switching", "model": MODEL_ID, "engine": "vllm"}
+        )
+    try:
+        response = await http_client.get("/health")
+        backend_healthy = response.status_code == 200
+        status = "healthy" if backend_healthy else "unhealthy"
+        result = {
+            "status": status,
+            "model": MODEL_ID,
+            "model_path": MODEL_PATH,
+            "engine": "vllm",
+            "backend": {"status": "healthy" if backend_healthy else "unhealthy"}
+        }
+        if backend_healthy:
+            return result
+        return JSONResponse(status_code=503, content=result)
+    except Exception as e:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "error": str(e), "model": MODEL_ID, "engine": "vllm"}
+        )
+
+
+# ============================================================================
+# Admin Management Endpoints
+# ============================================================================
+
+@app.get("/admin/current-model")
+async def admin_current_model():
+    uptime = time.time() - backend_start_time if backend_start_time else 0
+    status = "switching" if is_switching else "serving"
+    if not is_switching:
+        try:
+            r = await http_client.get("/health")
+            if r.status_code != 200:
+                status = "unhealthy"
+        except Exception:
+            status = "unhealthy"
+    return {
+        "model_id": MODEL_ID,
+        "model_path": MODEL_PATH,
+        "status": status,
+        "engine": "vllm",
+        "uptime_seconds": round(uptime, 1)
+    }
+
+
+@app.post("/admin/switch-model")
+async def admin_switch_model(request: Request):
+    global MODEL_ID, MODEL_PATH, backend_start_time, is_switching, tokenizer
+
+    if is_switching:
+        return JSONResponse(
+            status_code=409,
+            content={"error": "A model switch is already in progress"}
+        )
+
+    body = await request.json()
+    new_model_id = body.get("model_id")
+    if not new_model_id:
+        return JSONResponse(status_code=400, content={"error": "model_id is required"})
+
+    previous_model = MODEL_ID
+    previous_path = MODEL_PATH
+    switch_start = time.time()
+
+    try:
+        is_switching = True
+
+        logger.info(f"Switching model: {previous_model} -> {new_model_id}")
+        new_model_path = query_mlflow(new_model_id)
+        logger.info(f"Found model at: {new_model_path}")
+
+        stop_backend()
+
+        MODEL_ID = new_model_id
+        MODEL_PATH = new_model_path
+        os.environ["MODEL_ID"] = new_model_id
+        os.environ["MODEL_PATH"] = new_model_path
+
+        start_backend(new_model_path, new_model_id)
+
+        if not wait_for_backend(timeout=600):
+            logger.error(f"Failed to start vllm serve for {new_model_id}, rolling back...")
+            stop_backend()
+            try:
+                MODEL_ID = previous_model
+                MODEL_PATH = previous_path
+                os.environ["MODEL_ID"] = previous_model
+                os.environ["MODEL_PATH"] = previous_path
+                start_backend(previous_path, previous_model)
+                wait_for_backend(timeout=600)
+                logger.info("Rollback succeeded")
+            except Exception as rollback_err:
+                logger.error(f"Rollback also failed: {rollback_err}")
+
+            is_switching = False
+            backend_start_time = time.time()
+            if MODEL_PATH:
+                tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+            return JSONResponse(status_code=500, content={
+                "previous_model": previous_model,
+                "current_model": MODEL_ID,
+                "status": "serving",
+                "error": f"Failed to load {new_model_id}: backend did not become healthy within timeout"
+            })
+
+        logger.info("Reloading tokenizer...")
+        tokenizer = AutoTokenizer.from_pretrained(new_model_path)
+
+        backend_start_time = time.time()
+        is_switching = False
+        switch_time = time.time() - switch_start
+
+        logger.info(f"Model switch complete: {previous_model} -> {MODEL_ID} in {switch_time:.1f}s")
+
+        return {
+            "previous_model": previous_model,
+            "current_model": MODEL_ID,
+            "status": "serving",
+            "switch_time_seconds": round(switch_time, 1)
+        }
+
+    except Exception as e:
+        logger.error(f"Error during model switch: {e}", exc_info=True)
+        is_switching = False
+        return JSONResponse(status_code=500, content={
+            "previous_model": previous_model,
+            "current_model": MODEL_ID,
+            "status": "error",
+            "error": str(e)
+        })
+
+
+@app.get("/admin/status")
+async def admin_status():
+    if is_switching:
+        return {"status": "switching", "ready": False}
+    try:
+        r = await http_client.get("/health")
+        if r.status_code == 200:
+            return {"status": "ready", "ready": True}
+        return {"status": "unhealthy", "ready": False}
+    except Exception:
+        return {"status": "unreachable", "ready": False}
+
+
+# ============================================================================
+# OpenAI-Compatible API Endpoints
+# ============================================================================
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(request: Request):
+    """Proxy to vllm serve backend with streaming support."""
+    try:
+        body = await request.json()
+        stream = body.get('stream', False)
+
+        if stream:
+            async def stream_proxy():
+                async with http_client.stream("POST", "/v1/chat/completions", json=body) as response:
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+            return StreamingResponse(
+                stream_proxy(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
+            )
+
+        response = await http_client.post("/v1/chat/completions", json=body)
+        return JSONResponse(content=response.json(), status_code=response.status_code)
+
+    except Exception as e:
+        logger.error(f"Error in chat completions: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"message": str(e), "type": "internal_error"}}
+        )
+
+
+@app.get("/v1/models")
+async def openai_models():
+    """OpenAI-compatible models endpoint."""
+    return JSONResponse({
+        "object": "list",
+        "data": [{
+            "id": MODEL_ID,
+            "object": "model",
+            "created": int(time.time()),
+            "owned_by": "thinkube",
+            "permission": [],
+            "root": MODEL_ID,
+            "parent": None
+        }]
+    })
+
+
+# ============================================================================
+# Gradio Chat UI
+# ============================================================================
+
+def generate_response(message: str, history: list, temperature: float = 0.7, max_tokens: int = 512):
+    """Generate response via vllm serve backend."""
     messages = []
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
-    messages.append({"role": "user", "content": message})
+    if history:
+        for item in history:
+            if isinstance(item, dict):
+                role = item.get("role", "user")
+                content = item.get("content", "")
+                if isinstance(content, list):
+                    text_parts = []
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                    content = "".join(text_parts)
+                if content:
+                    messages.append({"role": role, "content": content})
+            elif isinstance(item, (list, tuple)) and len(item) == 2:
+                user_msg, assistant_msg = item
+                if user_msg:
+                    messages.append({"role": "user", "content": str(user_msg)})
+                if assistant_msg:
+                    messages.append({"role": "assistant", "content": str(assistant_msg)})
 
-    prompt = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+    messages.append({"role": "user", "content": str(message)})
+
+    response = sync_http_client.post(
+        "/v1/chat/completions",
+        json={
+            "model": MODEL_ID,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "top_p": 0.95,
+        }
     )
+    response.raise_for_status()
+    result = response.json()
 
-    sampling_params = SamplingParams(
-        temperature=temperature,
-        top_p=0.95,
-        max_tokens=max_tokens,
-    )
+    content = result["choices"][0]["message"].get("content", "")
+    yield content
 
-    outputs = llm.generate([prompt], sampling_params)
-    response = outputs[0].outputs[0].text
 
-    for i in range(0, len(response), 5):
-        yield response[: i + 5]
-
+thinkube_theme = create_thinkube_theme()
 
 demo = gr.ChatInterface(
     generate_response,
-    type="messages",
     title=APP_TITLE,
     description=f"Chat with {MODEL_ID} (powered by vLLM)",
     examples=[
-        {"text": "Hello! How are you?"},
-        {"text": "Can you explain quantum computing in simple terms?"},
-        {"text": "Write a Python function to calculate fibonacci numbers"},
+        ["Hello! How are you?", 0.7, 512],
+        ["Can you explain quantum computing in simple terms?", 0.7, 512],
+        ["Write a Python function to calculate fibonacci numbers", 0.7, 512],
     ],
-    theme="soft",
     analytics_enabled=False,
     additional_inputs=[
         gr.Slider(0.1, 2.0, value=0.7, label="Temperature"),
@@ -59,13 +444,15 @@ demo = gr.ChatInterface(
     ],
 )
 
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy", "model": MODEL_ID, "engine": "vLLM"}
-
-
-app = gr.mount_gradio_app(app, demo, path="/")
+app = gr.mount_gradio_app(
+    app,
+    demo,
+    path="/",
+    theme=thinkube_theme,
+    css=THINKUBE_CSS,
+    favicon_path="/app/icons/tk_ai.svg"
+)
 
 if __name__ == "__main__":
+    initialize()
     uvicorn.run(app, host="0.0.0.0", port=7860, log_level="info")
