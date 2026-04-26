@@ -38,6 +38,10 @@ tokenizer = None
 http_client = None
 sync_http_client = None
 
+model_stop_tokens: list = []
+model_reasoning_format: str | None = None
+model_tool_use: bool = False
+
 
 def query_mlflow(model_id: str) -> str:
     """Query MLflow to get the JuiceFS artifact path for a model."""
@@ -224,13 +228,17 @@ async def admin_current_model():
         "model_path": MODEL_PATH,
         "status": status,
         "engine": "vllm",
-        "uptime_seconds": round(uptime, 1)
+        "uptime_seconds": round(uptime, 1),
+        "stop_tokens": model_stop_tokens,
+        "reasoning_format": model_reasoning_format,
+        "tool_use": model_tool_use,
     }
 
 
 @app.post("/admin/switch-model")
 async def admin_switch_model(request: Request):
     global MODEL_ID, MODEL_PATH, backend_start_time, is_switching, tokenizer
+    global model_stop_tokens, model_reasoning_format, model_tool_use
 
     if is_switching:
         return JSONResponse(
@@ -242,6 +250,14 @@ async def admin_switch_model(request: Request):
     new_model_id = body.get("model_id")
     if not new_model_id:
         return JSONResponse(status_code=400, content={"error": "model_id is required"})
+
+    metadata = {}
+    if "stop_tokens" in body:
+        metadata["stop_tokens"] = body["stop_tokens"]
+    if "reasoning_format" in body:
+        metadata["reasoning_format"] = body["reasoning_format"]
+    if "tool_use" in body:
+        metadata["tool_use"] = body["tool_use"]
 
     previous_model = MODEL_ID
     previous_path = MODEL_PATH
@@ -291,6 +307,13 @@ async def admin_switch_model(request: Request):
         logger.info("Reloading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(new_model_path)
 
+        if metadata.get("stop_tokens") is not None:
+            model_stop_tokens = metadata["stop_tokens"]
+        if metadata.get("reasoning_format") is not None:
+            model_reasoning_format = metadata["reasoning_format"]
+        if metadata.get("tool_use") is not None:
+            model_tool_use = metadata["tool_use"]
+
         backend_start_time = time.time()
         is_switching = False
         switch_time = time.time() - switch_start
@@ -301,7 +324,10 @@ async def admin_switch_model(request: Request):
             "previous_model": previous_model,
             "current_model": MODEL_ID,
             "status": "serving",
-            "switch_time_seconds": round(switch_time, 1)
+            "switch_time_seconds": round(switch_time, 1),
+            "stop_tokens": model_stop_tokens,
+            "reasoning_format": model_reasoning_format,
+            "tool_use": model_tool_use,
         }
 
     except Exception as e:
