@@ -5,6 +5,7 @@ spec:
   deployment:
     type: component
     name: vllm
+    replicas: 0
 
   containers:
     - name: inference
