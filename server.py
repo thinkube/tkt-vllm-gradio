@@ -22,15 +22,13 @@ from thinkube_theme import create_thinkube_theme, THINKUBE_CSS
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-MODEL_ID = os.environ.get("MODEL_ID", "mistralai/Mistral-7B-Instruct-v0.2")
-MODEL_PATH = os.environ.get("MODEL_PATH")
-APP_NAME = os.environ.get("APP_NAME", "vllm-server")
-APP_TITLE = os.environ.get("APP_TITLE", APP_NAME)
+MODEL_ID = None
+MODEL_PATH = None
 
 VLLM_BACKEND_URL = "http://127.0.0.1:8355"
 VLLM_PID_FILE = "/tmp/vllm.pid"
 
-app = FastAPI(title=f"{APP_NAME} vLLM Server")
+app = FastAPI(title="vLLM Server")
 
 backend_start_time = None
 is_switching = False
@@ -153,16 +151,10 @@ def wait_for_backend(timeout: int = 600) -> bool:
 
 
 def initialize():
-    """Initialize tokenizer and HTTP clients."""
-    global tokenizer, http_client, sync_http_client, backend_start_time
-    logger.info(f"Model ID: {MODEL_ID}")
-    logger.info(f"Model path: {MODEL_PATH}")
+    """Initialize HTTP clients."""
+    global http_client, sync_http_client
     logger.info(f"Backend URL: {VLLM_BACKEND_URL}")
-
-    if MODEL_PATH:
-        logger.info("Loading tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
-        logger.info("Tokenizer loaded")
+    logger.info("Starting in idle mode - no model loaded")
 
     http_client = httpx.AsyncClient(
         base_url=VLLM_BACKEND_URL,
@@ -172,8 +164,6 @@ def initialize():
         base_url=VLLM_BACKEND_URL,
         timeout=httpx.Timeout(300.0, connect=10.0),
     )
-
-    backend_start_time = time.time()
 
 
 # ============================================================================
@@ -187,20 +177,14 @@ async def health_check():
             status_code=503,
             content={"status": "unhealthy", "reason": "model_switching", "model": MODEL_ID, "engine": "vllm"}
         )
+    if MODEL_ID is None:
+        return {"status": "idle", "model": None, "engine": "vllm"}
     try:
         response = await http_client.get("/health")
         backend_healthy = response.status_code == 200
-        status = "healthy" if backend_healthy else "unhealthy"
-        result = {
-            "status": status,
-            "model": MODEL_ID,
-            "model_path": MODEL_PATH,
-            "engine": "vllm",
-            "backend": {"status": "healthy" if backend_healthy else "unhealthy"}
-        }
         if backend_healthy:
-            return result
-        return JSONResponse(status_code=503, content=result)
+            return {"status": "healthy", "model": MODEL_ID, "model_path": MODEL_PATH, "engine": "vllm"}
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "model": MODEL_ID, "engine": "vllm"})
     except Exception as e:
         return JSONResponse(
             status_code=503,
@@ -214,6 +198,8 @@ async def health_check():
 
 @app.get("/admin/current-model")
 async def admin_current_model():
+    if MODEL_ID is None:
+        return {"model_id": None, "model_path": None, "status": "idle", "engine": "vllm", "uptime_seconds": 0}
     uptime = time.time() - backend_start_time if backend_start_time else 0
     status = "switching" if is_switching else "serving"
     if not is_switching:
@@ -282,21 +268,21 @@ async def admin_switch_model(request: Request):
         if not wait_for_backend(timeout=600):
             logger.error(f"Failed to start vllm serve for {new_model_id}, rolling back...")
             stop_backend()
-            try:
-                MODEL_ID = previous_model
-                MODEL_PATH = previous_path
-                os.environ["MODEL_ID"] = previous_model
-                os.environ["MODEL_PATH"] = previous_path
-                start_backend(previous_path, previous_model)
-                wait_for_backend(timeout=600)
-                logger.info("Rollback succeeded")
-            except Exception as rollback_err:
-                logger.error(f"Rollback also failed: {rollback_err}")
+            MODEL_ID = previous_model
+            MODEL_PATH = previous_path
+            if previous_model and previous_path:
+                try:
+                    os.environ["MODEL_ID"] = previous_model
+                    os.environ["MODEL_PATH"] = previous_path
+                    start_backend(previous_path, previous_model)
+                    wait_for_backend(timeout=600)
+                    tokenizer = AutoTokenizer.from_pretrained(previous_path)
+                    logger.info("Rollback succeeded")
+                except Exception as rollback_err:
+                    logger.error(f"Rollback also failed: {rollback_err}")
 
             is_switching = False
-            backend_start_time = time.time()
-            if MODEL_PATH:
-                tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+            backend_start_time = time.time() if MODEL_ID else None
             return JSONResponse(status_code=500, content={
                 "previous_model": previous_model,
                 "current_model": MODEL_ID,
@@ -345,6 +331,8 @@ async def admin_switch_model(request: Request):
 async def admin_status():
     if is_switching:
         return {"status": "switching", "ready": False}
+    if MODEL_ID is None:
+        return {"status": "idle", "ready": True}
     try:
         r = await http_client.get("/health")
         if r.status_code == 200:
@@ -361,6 +349,8 @@ async def admin_status():
 @app.post("/v1/chat/completions")
 async def openai_chat_completions(request: Request):
     """Proxy to vllm serve backend with streaming support."""
+    if MODEL_ID is None:
+        return JSONResponse(status_code=503, content={"error": {"message": "No model loaded", "type": "service_unavailable"}})
     try:
         body = await request.json()
         stream = body.get('stream', False)
@@ -390,6 +380,8 @@ async def openai_chat_completions(request: Request):
 @app.get("/v1/models")
 async def openai_models():
     """OpenAI-compatible models endpoint."""
+    if MODEL_ID is None:
+        return JSONResponse({"object": "list", "data": []})
     return JSONResponse({
         "object": "list",
         "data": [{
@@ -456,8 +448,8 @@ thinkube_theme = create_thinkube_theme()
 
 demo = gr.ChatInterface(
     generate_response,
-    title=APP_TITLE,
-    description=f"Chat with {MODEL_ID} (powered by vLLM)",
+    title="vLLM Chat",
+    description="Powered by vLLM",
     examples=[
         ["Hello! How are you?", 0.7, 512],
         ["Can you explain quantum computing in simple terms?", 0.7, 512],
