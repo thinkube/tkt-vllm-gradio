@@ -122,13 +122,20 @@ def stop_backend():
 
 def start_backend(model_path: str, model_id: str) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
+    gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.75")
+    max_model_len = os.environ.get("VLLM_MAX_MODEL_LEN")
+
     cmd = [
         "vllm", "serve", model_path,
         "--host", "127.0.0.1",
         "--port", "8355",
         "--dtype", "auto",
         "--served-model-name", model_id,
+        "--gpu-memory-utilization", gpu_util,
     ]
+    if max_model_len:
+        cmd.extend(["--max-model-len", max_model_len])
+
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
     with open(VLLM_PID_FILE, 'w') as f:
