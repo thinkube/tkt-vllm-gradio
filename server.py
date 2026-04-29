@@ -179,13 +179,10 @@ def initialize():
 
 @app.get("/health")
 async def health_check():
-    if is_switching:
-        return JSONResponse(
-            status_code=503,
-            content={"status": "unhealthy", "reason": "model_switching", "model": MODEL_ID, "engine": "vllm"}
-        )
-    if MODEL_ID is None:
+    if MODEL_ID is None and not is_switching:
         return {"status": "idle", "model": None, "engine": "vllm"}
+    if is_switching:
+        return {"status": "switching", "model": MODEL_ID, "engine": "vllm"}
     try:
         response = await http_client.get("/health")
         backend_healthy = response.status_code == 200
