@@ -120,10 +120,10 @@ def stop_backend():
         logger.info("No running vllm backend found")
 
 
-def start_backend(model_path: str, model_id: str) -> subprocess.Popen:
+def start_backend(model_path: str, model_id: str, max_context_length: int | None = None) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
     gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.75")
-    max_model_len = os.environ.get("VLLM_MAX_MODEL_LEN")
+    max_model_len = str(max_context_length) if max_context_length else os.environ.get("VLLM_MAX_MODEL_LEN")
 
     cmd = [
         "vllm", "serve", model_path,
@@ -252,6 +252,8 @@ async def admin_switch_model(request: Request):
     if "tool_use" in body:
         metadata["tool_use"] = body["tool_use"]
 
+    max_context_length = body.get("max_context_length")
+
     previous_model = MODEL_ID
     previous_path = MODEL_PATH
     switch_start = time.time()
@@ -270,7 +272,7 @@ async def admin_switch_model(request: Request):
         os.environ["MODEL_ID"] = new_model_id
         os.environ["MODEL_PATH"] = new_model_path
 
-        start_backend(new_model_path, new_model_id)
+        start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
 
         if not wait_for_backend(timeout=600):
             logger.error(f"Failed to start vllm serve for {new_model_id}, rolling back...")
