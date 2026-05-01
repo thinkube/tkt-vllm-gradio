@@ -5,9 +5,11 @@ Uses vllm serve as a subprocess for model switching support
 """
 
 import os
+import json
 import time
 import signal
 import logging
+import asyncio
 import subprocess
 
 import httpx
@@ -171,6 +173,56 @@ def initialize():
         base_url=VLLM_BACKEND_URL,
         timeout=httpx.Timeout(300.0, connect=10.0),
     )
+
+
+# ============================================================================
+# Auto-load from MODEL_ID env var
+# ============================================================================
+
+def _do_auto_load(model_id: str):
+    global MODEL_ID, MODEL_PATH, backend_start_time, is_switching, tokenizer
+    global model_stop_tokens, model_reasoning_format, model_tool_use
+
+    logger.info(f"Auto-loading model from MODEL_ID env var: {model_id}")
+    is_switching = True
+
+    try:
+        model_path = query_mlflow(model_id)
+        logger.info(f"Resolved model path: {model_path}")
+
+        start_backend(model_path, model_id,
+                      max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
+                      if os.environ.get("MAX_CONTEXT_LENGTH") else None)
+
+        if not wait_for_backend(timeout=600):
+            logger.error(f"Auto-load failed: {model_id} did not become healthy")
+            is_switching = False
+            return
+
+        MODEL_ID = model_id
+        MODEL_PATH = model_path
+        tokenizer = AutoTokenizer.from_pretrained(model_path)
+
+        stop_tokens_str = os.environ.get("STOP_TOKENS")
+        if stop_tokens_str:
+            model_stop_tokens = json.loads(stop_tokens_str)
+        if os.environ.get("REASONING_FORMAT"):
+            model_reasoning_format = os.environ["REASONING_FORMAT"]
+        model_tool_use = os.environ.get("TOOL_USE", "").lower() == "true"
+
+        backend_start_time = time.time()
+        is_switching = False
+        logger.info(f"Auto-load complete: {model_id}")
+    except Exception as e:
+        is_switching = False
+        logger.error(f"Auto-load failed: {e}", exc_info=True)
+
+
+@app.on_event("startup")
+async def startup_auto_load():
+    env_model_id = os.environ.get("MODEL_ID")
+    if env_model_id:
+        asyncio.create_task(asyncio.to_thread(_do_auto_load, env_model_id))
 
 
 # ============================================================================
