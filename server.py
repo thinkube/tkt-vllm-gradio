@@ -137,6 +137,8 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     ]
     if max_model_len:
         cmd.extend(["--max-model-len", max_model_len])
+    if model_reasoning_format:
+        cmd.extend(["--reasoning-parser", model_reasoning_format])
 
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
@@ -190,6 +192,13 @@ def _do_auto_load(model_id: str):
         model_path = query_mlflow(model_id)
         logger.info(f"Resolved model path: {model_path}")
 
+        stop_tokens_str = os.environ.get("STOP_TOKENS")
+        if stop_tokens_str:
+            model_stop_tokens = json.loads(stop_tokens_str)
+        if os.environ.get("REASONING_FORMAT"):
+            model_reasoning_format = os.environ["REASONING_FORMAT"]
+        model_tool_use = os.environ.get("TOOL_USE", "").lower() == "true"
+
         start_backend(model_path, model_id,
                       max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
                       if os.environ.get("MAX_CONTEXT_LENGTH") else None)
@@ -202,13 +211,6 @@ def _do_auto_load(model_id: str):
         MODEL_ID = model_id
         MODEL_PATH = model_path
         tokenizer = AutoTokenizer.from_pretrained(model_path)
-
-        stop_tokens_str = os.environ.get("STOP_TOKENS")
-        if stop_tokens_str:
-            model_stop_tokens = json.loads(stop_tokens_str)
-        if os.environ.get("REASONING_FORMAT"):
-            model_reasoning_format = os.environ["REASONING_FORMAT"]
-        model_tool_use = os.environ.get("TOOL_USE", "").lower() == "true"
 
         backend_start_time = time.time()
         is_switching = False
@@ -321,6 +323,13 @@ async def admin_switch_model(request: Request):
         os.environ["MODEL_ID"] = new_model_id
         os.environ["MODEL_PATH"] = new_model_path
 
+        if metadata.get("stop_tokens") is not None:
+            model_stop_tokens = metadata["stop_tokens"]
+        if metadata.get("reasoning_format") is not None:
+            model_reasoning_format = metadata["reasoning_format"]
+        if metadata.get("tool_use") is not None:
+            model_tool_use = metadata["tool_use"]
+
         start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
 
         if not wait_for_backend(timeout=600):
@@ -350,13 +359,6 @@ async def admin_switch_model(request: Request):
 
         logger.info("Reloading tokenizer...")
         tokenizer = AutoTokenizer.from_pretrained(new_model_path)
-
-        if metadata.get("stop_tokens") is not None:
-            model_stop_tokens = metadata["stop_tokens"]
-        if metadata.get("reasoning_format") is not None:
-            model_reasoning_format = metadata["reasoning_format"]
-        if metadata.get("tool_use") is not None:
-            model_tool_use = metadata["tool_use"]
 
         backend_start_time = time.time()
         is_switching = False
