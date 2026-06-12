@@ -139,6 +139,11 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         cmd.extend(["--max-model-len", max_model_len])
     if model_reasoning_format:
         cmd.extend(["--reasoning-parser", model_reasoning_format])
+    # Tensor-parallel across a discrete node's GPUs (set by the gateway when a
+    # model doesn't fit one GPU's VRAM). Omitted/1 on UMA and single-GPU loads.
+    tensor_parallel = os.environ.get("TENSOR_PARALLEL_SIZE")
+    if tensor_parallel and tensor_parallel != "1":
+        cmd.extend(["--tensor-parallel-size", tensor_parallel])
 
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
@@ -204,9 +209,11 @@ def _do_auto_load(model_id: str):
                       if os.environ.get("MAX_CONTEXT_LENGTH") else None)
 
         if not wait_for_backend(timeout=600):
-            logger.error(f"Auto-load failed: {model_id} did not become healthy")
-            is_switching = False
-            return
+            logger.error(
+                f"Auto-load failed: {model_id} did not become healthy — exiting so "
+                f"the pod goes NotReady (the gateway surfaces the error)"
+            )
+            os._exit(1)
 
         MODEL_ID = model_id
         MODEL_PATH = model_path
@@ -216,8 +223,11 @@ def _do_auto_load(model_id: str):
         is_switching = False
         logger.info(f"Auto-load complete: {model_id}")
     except Exception as e:
-        is_switching = False
-        logger.error(f"Auto-load failed: {e}", exc_info=True)
+        logger.error(
+            f"Auto-load failed: {e} — exiting so the pod goes NotReady",
+            exc_info=True,
+        )
+        os._exit(1)
 
 
 @app.on_event("startup")
