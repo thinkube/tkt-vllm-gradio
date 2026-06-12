@@ -139,6 +139,11 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         cmd.extend(["--max-model-len", max_model_len])
     if model_reasoning_format:
         cmd.extend(["--reasoning-parser", model_reasoning_format])
+    # Tensor-parallel across a discrete node's GPUs (set by the gateway when a
+    # model doesn't fit one GPU's VRAM). Omitted/1 on UMA and single-GPU loads.
+    tensor_parallel = os.environ.get("TENSOR_PARALLEL_SIZE")
+    if tensor_parallel and tensor_parallel != "1":
+        cmd.extend(["--tensor-parallel-size", tensor_parallel])
 
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
