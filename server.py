@@ -204,9 +204,11 @@ def _do_auto_load(model_id: str):
                       if os.environ.get("MAX_CONTEXT_LENGTH") else None)
 
         if not wait_for_backend(timeout=600):
-            logger.error(f"Auto-load failed: {model_id} did not become healthy")
-            is_switching = False
-            return
+            logger.error(
+                f"Auto-load failed: {model_id} did not become healthy — exiting so "
+                f"the pod goes NotReady (the gateway surfaces the error)"
+            )
+            os._exit(1)
 
         MODEL_ID = model_id
         MODEL_PATH = model_path
@@ -216,8 +218,11 @@ def _do_auto_load(model_id: str):
         is_switching = False
         logger.info(f"Auto-load complete: {model_id}")
     except Exception as e:
-        is_switching = False
-        logger.error(f"Auto-load failed: {e}", exc_info=True)
+        logger.error(
+            f"Auto-load failed: {e} — exiting so the pod goes NotReady",
+            exc_info=True,
+        )
+        os._exit(1)
 
 
 @app.on_event("startup")
