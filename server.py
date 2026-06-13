@@ -145,6 +145,14 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     if tensor_parallel and tensor_parallel != "1":
         cmd.extend(["--tensor-parallel-size", tensor_parallel])
 
+    # Speculative decoding (e.g. MTP) — a JSON blob passed straight to vLLM's
+    # --speculative-config. The gateway sets this for models that ship a draft /
+    # MTP head (e.g. {"method": "mtp", "num_speculative_tokens": 1}); omitted
+    # otherwise so non-speculative models are unaffected.
+    speculative_config = os.environ.get("SPECULATIVE_CONFIG")
+    if speculative_config:
+        cmd.extend(["--speculative-config", speculative_config])
+
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
     with open(VLLM_PID_FILE, 'w') as f:
