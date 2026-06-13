@@ -153,6 +153,13 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     if speculative_config:
         cmd.extend(["--speculative-config", speculative_config])
 
+    # Eager mode: skip torch.compile + CUDA-graph capture. On bandwidth-bound
+    # large models the decode cost is small (decode waits on memory, not kernel
+    # launch), but it removes the compile/graph-capture memory peak and startup
+    # time, keeping the init footprint ≈ weights so sizing stays small/predictable.
+    if os.environ.get("ENFORCE_EAGER", "").lower() == "true":
+        cmd.append("--enforce-eager")
+
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
     with open(VLLM_PID_FILE, 'w') as f:
