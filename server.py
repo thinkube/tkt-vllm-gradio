@@ -181,7 +181,7 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     return proc
 
 
-def wait_for_backend(timeout: int = 600) -> bool:
+def wait_for_backend(timeout: int = 1800) -> bool:
     """Wait for vllm serve to become healthy."""
     start = time.time()
     while time.time() - start < timeout:
@@ -237,10 +237,16 @@ def _do_auto_load(model_id: str):
                       max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
                       if os.environ.get("MAX_CONTEXT_LENGTH") else None)
 
-        if not wait_for_backend(timeout=600):
+        # Generous health-wait: a DFlash/compiled load (weights + torch.compile +
+        # flashinfer autotune + dual graph capture) can take ~700s+ on a cold
+        # cache. 600s killed legitimate loads mid-graph-capture → crash loop.
+        # Env-overridable. The gateway's LOAD_TIMEOUT_SECONDS must stay above this.
+        load_timeout = int(os.environ.get("VLLM_LOAD_TIMEOUT_SECONDS", "1800"))
+        if not wait_for_backend(timeout=load_timeout):
             logger.error(
-                f"Auto-load failed: {model_id} did not become healthy — exiting so "
-                f"the pod goes NotReady (the gateway surfaces the error)"
+                f"Auto-load failed: {model_id} did not become healthy within "
+                f"{load_timeout}s — exiting so the pod goes NotReady (the gateway "
+                f"surfaces the error)"
             )
             os._exit(1)
 
