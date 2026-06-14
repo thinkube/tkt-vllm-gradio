@@ -182,9 +182,26 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
 
 
 def wait_for_backend(timeout: int = 600) -> bool:
-    """Wait for vllm serve to become healthy."""
+    """Wait for vllm serve to become healthy, or fail fast if it dies.
+
+    A bad config (e.g. an invalid speculative-config) makes `vllm serve` exit
+    almost immediately. Polling only /health would then wait the full timeout
+    before reporting failure, leaving the gateway to surface the error slowly.
+    So also watch the subprocess (via its PID file): if it has exited, give up
+    at once — the caller os._exit(1)s, the pod goes NotReady, and the gateway
+    flips the model to a load error within seconds instead of minutes.
+    """
     start = time.time()
     while time.time() - start < timeout:
+        try:
+            with open(VLLM_PID_FILE) as f:
+                pid = int(f.read().strip())
+            os.kill(pid, 0)  # raises ProcessLookupError if the process is gone
+        except (FileNotFoundError, ValueError, ProcessLookupError):
+            logger.error("vllm serve subprocess exited before becoming healthy")
+            return False
+        except PermissionError:
+            pass  # process exists (owned elsewhere) — keep waiting
         try:
             r = req_lib.get(f"{VLLM_BACKEND_URL}/health", timeout=5)
             if r.status_code == 200:
