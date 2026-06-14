@@ -122,6 +122,22 @@ def stop_backend():
         logger.info("No running vllm backend found")
 
 
+def _tool_call_parser_for(reasoning_format: str | None) -> str:
+    """Map a model's reasoning format to its vLLM tool-call parser.
+
+    vLLM ships family-specific tool-call parsers; Qwen2.5/Qwen3 use the
+    hermes-style parser. The platform's tool-capable models are Qwen, so we
+    default to hermes; override per-model via the TOOL_CALL_PARSER env var.
+    """
+    mapping = {
+        "qwen3": "hermes",
+        "qwen": "hermes",
+    }
+    if reasoning_format:
+        return mapping.get(reasoning_format.lower(), "hermes")
+    return "hermes"
+
+
 def start_backend(model_path: str, model_id: str, max_context_length: int | None = None) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
     gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.75")
@@ -139,6 +155,17 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         cmd.extend(["--max-model-len", max_model_len])
     if model_reasoning_format:
         cmd.extend(["--reasoning-parser", model_reasoning_format])
+
+    # Tool calling: vLLM requires these flags to be set explicitly, otherwise
+    # requests carrying tools/tool_choice fail with HTTP 400 ('"auto" tool
+    # choice requires --enable-auto-tool-choice and --tool-call-parser to be
+    # set'). The parser must match the model family; Qwen3 uses the hermes-style
+    # parser. Overridable per-model via TOOL_CALL_PARSER.
+    if model_tool_use:
+        tool_parser = os.environ.get("TOOL_CALL_PARSER") or _tool_call_parser_for(model_reasoning_format)
+        cmd.append("--enable-auto-tool-choice")
+        cmd.extend(["--tool-call-parser", tool_parser])
+
     # Tensor-parallel across a discrete node's GPUs (set by the gateway when a
     # model doesn't fit one GPU's VRAM). Omitted/1 on UMA and single-GPU loads.
     tensor_parallel = os.environ.get("TENSOR_PARALLEL_SIZE")
