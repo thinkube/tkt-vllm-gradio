@@ -152,6 +152,20 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     speculative_config = os.environ.get("SPECULATIVE_CONFIG")
     if speculative_config:
         cmd.extend(["--speculative-config", speculative_config])
+        # DFlash reserves num_speculative_tokens extra draft slots per sequence,
+        # which underflows vLLM's default token budget (it refuses to start with
+        # "max_num_scheduled_tokens is set to <negative>"). Raise the batched-token
+        # budget so the draft slots fit — matches the z-lab DFlash recipe
+        # (--max-num-batched-tokens 32768). Env-overridable; only for DFlash.
+        try:
+            import json as _json
+            if _json.loads(speculative_config).get("method") == "dflash":
+                cmd.extend([
+                    "--max-num-batched-tokens",
+                    os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS", "32768"),
+                ])
+        except (ValueError, TypeError):
+            pass
 
     # Eager mode: skip torch.compile + CUDA-graph capture. On bandwidth-bound
     # large models the decode cost is small (decode waits on memory, not kernel
