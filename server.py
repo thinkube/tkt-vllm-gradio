@@ -125,13 +125,15 @@ def stop_backend():
 def _tool_call_parser_for(reasoning_format: str | None) -> str:
     """Map a model's reasoning format to its vLLM tool-call parser.
 
-    vLLM ships family-specific tool-call parsers; Qwen2.5/Qwen3 use the
-    hermes-style parser. The platform's tool-capable models are Qwen, so we
-    default to hermes; override per-model via the TOOL_CALL_PARSER env var.
+    vLLM ships family-specific tool-call parsers. The platform's Qwen3.x models
+    emit the Qwen XML tool-call format (<tool_call><function=...><parameter=...>),
+    which is parsed by qwen3_coder — NOT the hermes JSON parser. Default to
+    qwen3_coder for Qwen; override per-model via the TOOL_CALL_PARSER env var
+    (e.g. a hermes-style Qwen3-Instruct would set TOOL_CALL_PARSER=hermes).
     """
     mapping = {
-        "qwen3": "hermes",
-        "qwen": "hermes",
+        "qwen3": "qwen3_coder",
+        "qwen": "qwen3_coder",
     }
     if reasoning_format:
         return mapping.get(reasoning_format.lower(), "hermes")
