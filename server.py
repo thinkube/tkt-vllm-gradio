@@ -202,6 +202,33 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     # time, keeping the init footprint ≈ weights so sizing stays small/predictable.
     if os.environ.get("ENFORCE_EAGER", "").lower() == "true":
         cmd.append("--enforce-eager")
+    else:
+        # CUDA-graph capture trim (SP-tgqg1j_SL-6 / TEP-tgmtd3). vLLM's default
+        # captures ~51 sizes (min(max_num_seqs*2, 512)), costing ~80-120s of
+        # startup. This is a low-concurrency single-stream serving workload, so
+        # capture a small set of sizes + decode-only graphs to cut startup with
+        # no material decode regression. Both env-overridable — set
+        # VLLM_CUDAGRAPH_MODE=FULL_AND_PIECEWISE to restore vLLM's default mode if
+        # a speculative config regresses. (vLLM compilation-config / cuda_graphs.)
+        import json as _json_cg
+        _sizes = [int(s) for s in os.environ.get(
+            "VLLM_CUDAGRAPH_CAPTURE_SIZES", "1,2,4,8,16,24,32").split(",") if s.strip()]
+        cmd.extend(["-O", _json_cg.dumps({
+            "cudagraph_capture_sizes": _sizes,
+            "cudagraph_mode": os.environ.get("VLLM_CUDAGRAPH_MODE", "FULL_DECODE_ONLY"),
+        })])
+
+    # Persist the FlashInfer fp4_gemm autotune cache on the same NVMe hostPath as
+    # the torch.compile cache (SP-tgqg1j_SL-5 / TEP-tgmtd3). Without a durable dir
+    # the ~150s NVFP4 autotune re-runs every boot; pointing it at /root/.cache/vllm
+    # (a persistent hostPath mount) lets a reload skip it. setdefault so the
+    # gateway/operator can override. (vLLM env: VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR.)
+    _autotune_dir = os.environ.setdefault(
+        "VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR", "/root/.cache/vllm/flashinfer_autotune")
+    try:
+        os.makedirs(_autotune_dir, exist_ok=True)
+    except OSError:
+        pass
 
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
