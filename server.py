@@ -218,17 +218,23 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
             "cudagraph_mode": os.environ.get("VLLM_CUDAGRAPH_MODE", "FULL_DECODE_ONLY"),
         })])
 
-    # Persist the FlashInfer fp4_gemm autotune cache on the same NVMe hostPath as
-    # the torch.compile cache (SP-tgqg1j_SL-5 / TEP-tgmtd3). Without a durable dir
-    # the ~150s NVFP4 autotune re-runs every boot; pointing it at /root/.cache/vllm
-    # (a persistent hostPath mount) lets a reload skip it. setdefault so the
-    # gateway/operator can override. (vLLM env: VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR.)
-    _autotune_dir = os.environ.setdefault(
-        "VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR", "/root/.cache/vllm/flashinfer_autotune")
-    try:
-        os.makedirs(_autotune_dir, exist_ok=True)
-    except OSError:
-        pass
+    # Persist FlashInfer's caches on the same NVMe hostPath as the torch.compile
+    # cache so subsequent boots skip the JIT recompile + autotune (SP-tgqg1j_SL-5
+    # / TEP-tgmtd3). The DOMINANT cost is FlashInfer's JIT kernel build (Ninja),
+    # cached by default under the EPHEMERAL ~/.cache/flashinfer — lost on every
+    # pod restart, so it recompiles every boot (verified on GB10; flashinfer#2252,
+    # and the "subsequent boots ~2 min with cached JIT artifacts" behaviour).
+    # FLASHINFER_CACHE_DIR moves the JIT cache onto the persistent mount; the
+    # autotune-config cache is secondary. setdefault so the operator can override.
+    for _k, _v in (
+        ("FLASHINFER_CACHE_DIR", "/root/.cache/vllm/flashinfer"),
+        ("VLLM_FLASHINFER_AUTOTUNE_CACHE_DIR", "/root/.cache/vllm/flashinfer_autotune"),
+    ):
+        _d = os.environ.setdefault(_k, _v)
+        try:
+            os.makedirs(_d, exist_ok=True)
+        except OSError:
+            pass
 
     logger.info(f"Starting vllm serve: {' '.join(cmd)}")
     proc = subprocess.Popen(cmd)
