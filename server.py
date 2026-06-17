@@ -213,7 +213,7 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         import json as _json_cg
         _sizes = [int(s) for s in os.environ.get(
             "VLLM_CUDAGRAPH_CAPTURE_SIZES", "1,2,4,8,16,24,32").split(",") if s.strip()]
-        cmd.extend(["-O", _json_cg.dumps({
+        cmd.extend(["--compilation-config", _json_cg.dumps({
             "cudagraph_capture_sizes": _sizes,
             "cudagraph_mode": os.environ.get("VLLM_CUDAGRAPH_MODE", "FULL_DECODE_ONLY"),
         })])
