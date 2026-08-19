@@ -179,22 +179,37 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     # MTP head (e.g. {"method": "mtp", "num_speculative_tokens": 1}); omitted
     # otherwise so non-speculative models are unaffected.
     speculative_config = os.environ.get("SPECULATIVE_CONFIG")
+    speculative_method = None
     if speculative_config:
         cmd.extend(["--speculative-config", speculative_config])
+        try:
+            import json as _json
+            speculative_method = _json.loads(speculative_config).get("method")
+        except (ValueError, TypeError, AttributeError):
+            speculative_method = None
         # DFlash reserves num_speculative_tokens extra draft slots per sequence,
         # which underflows vLLM's default token budget (it refuses to start with
         # "max_num_scheduled_tokens is set to <negative>"). Raise the batched-token
         # budget so the draft slots fit — matches the z-lab DFlash recipe
         # (--max-num-batched-tokens 32768). Env-overridable; only for DFlash.
-        try:
-            import json as _json
-            if _json.loads(speculative_config).get("method") == "dflash":
-                cmd.extend([
-                    "--max-num-batched-tokens",
-                    os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS", "32768"),
-                ])
-        except (ValueError, TypeError):
-            pass
+        if speculative_method == "dflash":
+            cmd.extend([
+                "--max-num-batched-tokens",
+                os.environ.get("VLLM_MAX_NUM_BATCHED_TOKENS", "32768"),
+            ])
+
+    # KV-cache dtype. vLLM's default ("auto") adopts an fp8 KV-cache scheme when
+    # the checkpoint declares one (llm-compressor / compressed-tensors). The
+    # DFlash drafter runs non-causal attention, and no CUDA attention backend
+    # serves non-causal attention over an fp8 KV cache, so such a checkpoint
+    # cannot start with DFlash unless the KV cache is pinned to bf16 — which an
+    # explicit --kv-cache-dtype does (it takes precedence over the checkpoint
+    # scheme). KV_CACHE_DTYPE overrides for any model; DFlash defaults to bf16.
+    kv_cache_dtype = os.environ.get("KV_CACHE_DTYPE")
+    if not kv_cache_dtype and speculative_method == "dflash":
+        kv_cache_dtype = "bfloat16"
+    if kv_cache_dtype:
+        cmd.extend(["--kv-cache-dtype", kv_cache_dtype])
 
     # Eager mode: skip torch.compile + CUDA-graph capture. On bandwidth-bound
     # large models the decode cost is small (decode waits on memory, not kernel
