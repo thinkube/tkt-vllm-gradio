@@ -163,9 +163,10 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     # indent, and it does: a long structured reply spends a large share of its
     # tokens on newlines and spaces, which costs time and reaches max_tokens
     # early. vLLM takes this only at server start; the per-request option is
-    # ignored. VLLM_STRUCTURED_OUTPUTS_CONFIG overrides the JSON blob.
+    # ignored, and it is accepted only with the backend named (xgrammar or
+    # guidance). VLLM_STRUCTURED_OUTPUTS_CONFIG overrides the JSON blob.
     cmd.extend(["--structured-outputs-config",
-                os.environ.get("VLLM_STRUCTURED_OUTPUTS_CONFIG", '{"disable_any_whitespace": true}')])
+                os.environ.get("VLLM_STRUCTURED_OUTPUTS_CONFIG", '{"backend": "xgrammar", "disable_any_whitespace": true}')])
 
     # Tool calling: vLLM requires these flags to be set explicitly, otherwise
     # requests carrying tools/tool_choice fail with HTTP 400 ('"auto" tool
