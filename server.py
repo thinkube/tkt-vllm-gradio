@@ -158,6 +158,15 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     if model_reasoning_format:
         cmd.extend(["--reasoning-parser", model_reasoning_format])
 
+    # Schema-constrained replies (response_format json_schema) without free
+    # whitespace between JSON tokens. By default the grammar lets the model
+    # indent, and it does: a long structured reply spends a large share of its
+    # tokens on newlines and spaces, which costs time and reaches max_tokens
+    # early. vLLM takes this only at server start; the per-request option is
+    # ignored. VLLM_STRUCTURED_OUTPUTS_CONFIG overrides the JSON blob.
+    cmd.extend(["--structured-outputs-config",
+                os.environ.get("VLLM_STRUCTURED_OUTPUTS_CONFIG", '{"disable_any_whitespace": true}')])
+
     # Tool calling: vLLM requires these flags to be set explicitly, otherwise
     # requests carrying tools/tool_choice fail with HTTP 400 ('"auto" tool
     # choice requires --enable-auto-tool-choice and --tool-call-parser to be
