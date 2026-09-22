@@ -1,4 +1,6 @@
-# ⚠️ Under Development - Not Ready for Use
+# tkt-vllm-gradio
+
+The vLLM inference server behind the LLM Gateway. It is the `vllm` optional component, installed from the Optional Components page in thinkube-control.
 
 ## License
 
