@@ -12,9 +12,3 @@ metadata:
   tags: ["ai", "llm", "vllm", "inference", "text-generation", "gpu"]
 
 parameters: []
-
-secrets:
-  - name: HF_TOKEN
-    description: Hugging Face API token — required at runtime for gated models (Llama, Mistral, etc.)
-    required: false
-
