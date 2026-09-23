@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 ARG CONTAINER_REGISTRY
-FROM ${CONTAINER_REGISTRY}/library/vllm-base:0.19-cuda13.0-py3.12
+FROM ${CONTAINER_REGISTRY}/library/vllm-base:0.23.0-cuda13.0-py3.12
 
 # Copy application code
 COPY server.py .
