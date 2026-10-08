@@ -146,9 +146,19 @@ def _tool_call_parser_for(reasoning_format: str | None) -> str:
 
 def start_backend(model_path: str, model_id: str, max_context_length: int | None = None) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
-    gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.75")
+    gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION")
+    if not gpu_util:
+        raise RuntimeError(
+            "VLLM_GPU_MEMORY_UTILIZATION is not set; Thinkube Control sets it from the "
+            "model's memory plan when it creates the pod"
+        )
     max_model_len = str(max_context_length) if max_context_length else os.environ.get("VLLM_MAX_MODEL_LEN")
 
+    # Sequences served at once. Each one of a hybrid model (Qwen3.5/3.6,
+    # Qwen3-Next) holds one Mamba cache block taken from the KV cache memory,
+    # and vLLM refuses to start without a block for every one of them. These
+    # servers are low-concurrency (CUDA graphs are captured up to batch 32), so
+    # 32 keeps that reserve small; vLLM's own default is 256.
     cmd = [
         "vllm", "serve", model_path,
         "--host", "127.0.0.1",
@@ -156,6 +166,7 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         "--dtype", "auto",
         "--served-model-name", model_id,
         "--gpu-memory-utilization", gpu_util,
+        "--max-num-seqs", os.environ.get("VLLM_MAX_NUM_SEQS", "32"),
     ]
     if max_model_len:
         cmd.extend(["--max-model-len", max_model_len])
