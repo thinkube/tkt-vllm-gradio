@@ -272,10 +272,13 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     return proc
 
 
-def wait_for_backend(timeout: int = 1800) -> bool:
-    """Wait for vllm serve to become healthy."""
+def wait_for_backend(proc: subprocess.Popen, timeout: int = 1800) -> bool:
+    """Wait for vllm serve to become healthy; False at once if it exits."""
     start = time.time()
     while time.time() - start < timeout:
+        if proc.poll() is not None:
+            logger.error(f"vllm serve exited with code {proc.returncode} before it became healthy")
+            return False
         try:
             r = req_lib.get(f"{VLLM_BACKEND_URL}/health", timeout=5)
             if r.status_code == 200:
@@ -324,20 +327,20 @@ def _do_auto_load(model_id: str):
             model_reasoning_format = os.environ["REASONING_FORMAT"]
         model_tool_use = os.environ.get("TOOL_USE", "").lower() == "true"
 
-        start_backend(model_path, model_id,
-                      max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
-                      if os.environ.get("MAX_CONTEXT_LENGTH") else None)
+        proc = start_backend(model_path, model_id,
+                             max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
+                             if os.environ.get("MAX_CONTEXT_LENGTH") else None)
 
         # Generous health-wait: a DFlash/compiled load (weights + torch.compile +
         # flashinfer autotune + dual graph capture) can take ~700s+ on a cold
         # cache. 600s killed legitimate loads mid-graph-capture → crash loop.
         # Env-overridable. The gateway's LOAD_TIMEOUT_SECONDS must stay above this.
         load_timeout = int(os.environ.get("VLLM_LOAD_TIMEOUT_SECONDS", "1800"))
-        if not wait_for_backend(timeout=load_timeout):
+        if not wait_for_backend(proc, timeout=load_timeout):
             logger.error(
                 f"Auto-load failed: {model_id} did not become healthy within "
-                f"{load_timeout}s — exiting so the pod goes NotReady (the gateway "
-                f"surfaces the error)"
+                f"{load_timeout}s or its engine exited — exiting so the pod goes "
+                f"NotReady (the gateway surfaces the error)"
             )
             os._exit(1)
 
@@ -466,9 +469,9 @@ async def admin_switch_model(request: Request):
         if metadata.get("tool_use") is not None:
             model_tool_use = metadata["tool_use"]
 
-        start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
+        proc = start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
 
-        if not wait_for_backend(timeout=600):
+        if not wait_for_backend(proc, timeout=600):
             logger.error(f"Failed to start vllm serve for {new_model_id}, rolling back...")
             stop_backend()
             MODEL_ID = previous_model
@@ -477,8 +480,8 @@ async def admin_switch_model(request: Request):
                 try:
                     os.environ["MODEL_ID"] = previous_model
                     os.environ["MODEL_PATH"] = previous_path
-                    start_backend(previous_path, previous_model)
-                    wait_for_backend(timeout=600)
+                    proc = start_backend(previous_path, previous_model)
+                    wait_for_backend(proc, timeout=600)
                     tokenizer = AutoTokenizer.from_pretrained(previous_path)
                     logger.info("Rollback succeeded")
                 except Exception as rollback_err:
