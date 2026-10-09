@@ -488,23 +488,33 @@ async def admin_switch_model(request: Request):
             MODEL_ID = previous_model
             MODEL_PATH = previous_path
             if previous_model and previous_path:
+                # Restart the model that was serving. If it does not come
+                # back either, nothing is served and the answer says so.
+                rollback_error = None
                 try:
                     os.environ["MODEL_ID"] = previous_model
                     os.environ["MODEL_PATH"] = previous_path
                     proc = start_backend(previous_path, previous_model)
-                    wait_for_backend(proc, timeout=600)
-                    tokenizer = AutoTokenizer.from_pretrained(previous_path)
-                    logger.info("Rollback succeeded")
-                except Exception as rollback_err:
-                    logger.error(f"Rollback also failed: {rollback_err}")
+                    if wait_for_backend(proc, timeout=600):
+                        tokenizer = AutoTokenizer.from_pretrained(previous_path)
+                        logger.info(f"Rollback to {previous_model} succeeded")
+                    else:
+                        rollback_error = f"{previous_model} did not become healthy again"
+                except Exception as e:
+                    rollback_error = str(e)
+                if rollback_error:
+                    logger.error(f"Rollback failed: {rollback_error}")
+                    stop_backend()
+                    MODEL_ID = None
+                    MODEL_PATH = None
 
             is_switching = False
             backend_start_time = time.time() if MODEL_ID else None
             return JSONResponse(status_code=500, content={
                 "previous_model": previous_model,
                 "current_model": MODEL_ID,
-                "status": "serving",
-                "error": f"Failed to load {new_model_id}: backend did not become healthy within timeout"
+                "status": "serving" if MODEL_ID else "idle",
+                "error": f"Failed to load {new_model_id}: its engine exited or did not become healthy within the timeout"
             })
 
         logger.info("Reloading tokenizer...")
