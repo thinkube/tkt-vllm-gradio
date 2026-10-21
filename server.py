@@ -144,6 +144,44 @@ def _tool_call_parser_for(reasoning_format: str | None) -> str:
     return "hermes"
 
 
+def check_free_gpu_memory(gpu_util: float) -> None:
+    """Refuse to start when a card this pod was given lacks the model's share.
+
+    Thinkube Control plans a model's share of a card from the models it placed
+    itself; the device plugin chooses the card, and other processes (a notebook
+    kernel after a training) may hold memory on it. vLLM then stops with "Free
+    memory on device ... is less than desired GPU memory utilization". This
+    says the same before vLLM starts, with what other processes hold.
+
+    A GPU with no memory of its own (the GB10's unified memory) has no memory
+    for NVML to report (NotSupported); vLLM measures the shared pool there.
+    NVML reads the device without taking any of its memory.
+    """
+    import pynvml
+
+    pynvml.nvmlInit()
+    try:
+        for index in range(pynvml.nvmlDeviceGetCount()):
+            handle = pynvml.nvmlDeviceGetHandleByIndex(index)
+            try:
+                memory = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            except pynvml.NVMLError_NotSupported:
+                continue
+            gib = 1024 ** 3
+            needed = gpu_util * memory.total
+            if memory.free < needed:
+                raise RuntimeError(
+                    f"GPU {index} ({pynvml.nvmlDeviceGetName(handle)}) has "
+                    f"{memory.free / gib:.1f} GiB free of {memory.total / gib:.1f} GiB; "
+                    f"this model needs {needed / gib:.1f} GiB ({gpu_util:.2f} of the card). "
+                    f"Other processes hold {(memory.total - memory.free) / gib:.1f} GiB on it, "
+                    "for example a notebook kernel. Free that memory, or load the model "
+                    "on another node."
+                )
+    finally:
+        pynvml.nvmlShutdown()
+
+
 def start_backend(model_path: str, model_id: str, max_context_length: int | None = None) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
     gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION")
@@ -152,6 +190,7 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
             "VLLM_GPU_MEMORY_UTILIZATION is not set; Thinkube Control sets it from the "
             "model's memory plan when it creates the pod"
         )
+    check_free_gpu_memory(float(gpu_util))
     max_model_len = str(max_context_length) if max_context_length else os.environ.get("VLLM_MAX_MODEL_LEN")
 
     # Sequences served at once. Each one of a hybrid model (Qwen3.5/3.6,
@@ -320,6 +359,22 @@ def initialize():
 # Auto-load from MODEL_ID env var
 # ============================================================================
 
+TERMINATION_LOG = "/dev/termination-log"
+
+
+def exit_failed(reason: str):
+    """End the pod with reason as its termination message.
+
+    Kubernetes reads the termination message from /dev/termination-log, and
+    Thinkube Control shows it as the reason the load failed. The pod exits so
+    it goes NotReady.
+    """
+    logger.error(f"Auto-load failed: {reason}")
+    with open(TERMINATION_LOG, "w") as f:
+        f.write(reason)
+    os._exit(1)
+
+
 def _do_auto_load(model_id: str):
     global MODEL_ID, MODEL_PATH, backend_start_time, is_switching, tokenizer
     global model_stop_tokens, model_reasoning_format, model_tool_use
@@ -348,12 +403,10 @@ def _do_auto_load(model_id: str):
         # Env-overridable. The gateway's LOAD_TIMEOUT_SECONDS must stay above this.
         load_timeout = int(os.environ.get("VLLM_LOAD_TIMEOUT_SECONDS", "1800"))
         if not wait_for_backend(proc, timeout=load_timeout):
-            logger.error(
-                f"Auto-load failed: {model_id} did not become healthy within "
-                f"{load_timeout}s or its engine exited — exiting so the pod goes "
-                f"NotReady (the gateway surfaces the error)"
+            exit_failed(
+                f"{model_id} did not become healthy within {load_timeout}s or its "
+                f"engine exited; vllm serve's log above says why"
             )
-            os._exit(1)
 
         MODEL_ID = model_id
         MODEL_PATH = model_path
@@ -363,11 +416,8 @@ def _do_auto_load(model_id: str):
         is_switching = False
         logger.info(f"Auto-load complete: {model_id}")
     except Exception as e:
-        logger.error(
-            f"Auto-load failed: {e} — exiting so the pod goes NotReady",
-            exc_info=True,
-        )
-        os._exit(1)
+        logger.exception("Auto-load failed")
+        exit_failed(str(e))
 
 
 @app.on_event("startup")
