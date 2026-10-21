@@ -146,9 +146,19 @@ def _tool_call_parser_for(reasoning_format: str | None) -> str:
 
 def start_backend(model_path: str, model_id: str, max_context_length: int | None = None) -> subprocess.Popen:
     """Start vllm serve as a background subprocess."""
-    gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION", "0.75")
+    gpu_util = os.environ.get("VLLM_GPU_MEMORY_UTILIZATION")
+    if not gpu_util:
+        raise RuntimeError(
+            "VLLM_GPU_MEMORY_UTILIZATION is not set; Thinkube Control sets it from the "
+            "model's memory plan when it creates the pod"
+        )
     max_model_len = str(max_context_length) if max_context_length else os.environ.get("VLLM_MAX_MODEL_LEN")
 
+    # Sequences served at once. Each one of a hybrid model (Qwen3.5/3.6,
+    # Qwen3-Next) holds one Mamba cache block taken from the KV cache memory,
+    # and vLLM refuses to start without a block for every one of them. These
+    # servers are low-concurrency (CUDA graphs are captured up to batch 32), so
+    # 32 keeps that reserve small; vLLM's own default is 256.
     cmd = [
         "vllm", "serve", model_path,
         "--host", "127.0.0.1",
@@ -156,6 +166,7 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
         "--dtype", "auto",
         "--served-model-name", model_id,
         "--gpu-memory-utilization", gpu_util,
+        "--max-num-seqs", os.environ.get("VLLM_MAX_NUM_SEQS", "32"),
     ]
     if max_model_len:
         cmd.extend(["--max-model-len", max_model_len])
@@ -272,10 +283,13 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     return proc
 
 
-def wait_for_backend(timeout: int = 1800) -> bool:
-    """Wait for vllm serve to become healthy."""
+def wait_for_backend(proc: subprocess.Popen, timeout: int = 1800) -> bool:
+    """Wait for vllm serve to become healthy; False at once if it exits."""
     start = time.time()
     while time.time() - start < timeout:
+        if proc.poll() is not None:
+            logger.error(f"vllm serve exited with code {proc.returncode} before it became healthy")
+            return False
         try:
             r = req_lib.get(f"{VLLM_BACKEND_URL}/health", timeout=5)
             if r.status_code == 200:
@@ -324,20 +338,20 @@ def _do_auto_load(model_id: str):
             model_reasoning_format = os.environ["REASONING_FORMAT"]
         model_tool_use = os.environ.get("TOOL_USE", "").lower() == "true"
 
-        start_backend(model_path, model_id,
-                      max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
-                      if os.environ.get("MAX_CONTEXT_LENGTH") else None)
+        proc = start_backend(model_path, model_id,
+                             max_context_length=int(os.environ["MAX_CONTEXT_LENGTH"])
+                             if os.environ.get("MAX_CONTEXT_LENGTH") else None)
 
         # Generous health-wait: a DFlash/compiled load (weights + torch.compile +
         # flashinfer autotune + dual graph capture) can take ~700s+ on a cold
         # cache. 600s killed legitimate loads mid-graph-capture → crash loop.
         # Env-overridable. The gateway's LOAD_TIMEOUT_SECONDS must stay above this.
         load_timeout = int(os.environ.get("VLLM_LOAD_TIMEOUT_SECONDS", "1800"))
-        if not wait_for_backend(timeout=load_timeout):
+        if not wait_for_backend(proc, timeout=load_timeout):
             logger.error(
                 f"Auto-load failed: {model_id} did not become healthy within "
-                f"{load_timeout}s — exiting so the pod goes NotReady (the gateway "
-                f"surfaces the error)"
+                f"{load_timeout}s or its engine exited — exiting so the pod goes "
+                f"NotReady (the gateway surfaces the error)"
             )
             os._exit(1)
 
@@ -466,31 +480,41 @@ async def admin_switch_model(request: Request):
         if metadata.get("tool_use") is not None:
             model_tool_use = metadata["tool_use"]
 
-        start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
+        proc = start_backend(new_model_path, new_model_id, max_context_length=max_context_length)
 
-        if not wait_for_backend(timeout=600):
+        if not wait_for_backend(proc, timeout=600):
             logger.error(f"Failed to start vllm serve for {new_model_id}, rolling back...")
             stop_backend()
             MODEL_ID = previous_model
             MODEL_PATH = previous_path
             if previous_model and previous_path:
+                # Restart the model that was serving. If it does not come
+                # back either, nothing is served and the answer says so.
+                rollback_error = None
                 try:
                     os.environ["MODEL_ID"] = previous_model
                     os.environ["MODEL_PATH"] = previous_path
-                    start_backend(previous_path, previous_model)
-                    wait_for_backend(timeout=600)
-                    tokenizer = AutoTokenizer.from_pretrained(previous_path)
-                    logger.info("Rollback succeeded")
-                except Exception as rollback_err:
-                    logger.error(f"Rollback also failed: {rollback_err}")
+                    proc = start_backend(previous_path, previous_model)
+                    if wait_for_backend(proc, timeout=600):
+                        tokenizer = AutoTokenizer.from_pretrained(previous_path)
+                        logger.info(f"Rollback to {previous_model} succeeded")
+                    else:
+                        rollback_error = f"{previous_model} did not become healthy again"
+                except Exception as e:
+                    rollback_error = str(e)
+                if rollback_error:
+                    logger.error(f"Rollback failed: {rollback_error}")
+                    stop_backend()
+                    MODEL_ID = None
+                    MODEL_PATH = None
 
             is_switching = False
             backend_start_time = time.time() if MODEL_ID else None
             return JSONResponse(status_code=500, content={
                 "previous_model": previous_model,
                 "current_model": MODEL_ID,
-                "status": "serving",
-                "error": f"Failed to load {new_model_id}: backend did not become healthy within timeout"
+                "status": "serving" if MODEL_ID else "idle",
+                "error": f"Failed to load {new_model_id}: its engine exited or did not become healthy within the timeout"
             })
 
         logger.info("Reloading tokenizer...")

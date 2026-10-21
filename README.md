@@ -49,7 +49,8 @@ The LLM Gateway sets these on the pod when it loads a model:
 | `TOOL_USE` | `true` adds `--enable-auto-tool-choice` and `--tool-call-parser` |
 | `TOOL_CALL_PARSER` | the tool-call parser; without it, Qwen formats use `qwen3_coder` and others `hermes` |
 | `MAX_CONTEXT_LENGTH` | `--max-model-len` |
-| `VLLM_GPU_MEMORY_UTILIZATION` | `--gpu-memory-utilization` (default `0.75`) |
+| `VLLM_GPU_MEMORY_UTILIZATION` | `--gpu-memory-utilization`; required, Thinkube Control sets it from the model's memory plan |
+| `VLLM_MAX_NUM_SEQS` | `--max-num-seqs` (default `32`); a hybrid model reserves one Mamba cache block per sequence |
 | `TENSOR_PARALLEL_SIZE` | `--tensor-parallel-size`, when above 1 |
 | `SPECULATIVE_CONFIG` | `--speculative-config` (JSON); DFlash also sets `--max-num-batched-tokens` and a `bfloat16` KV cache |
 | `ENFORCE_EAGER` | `true` adds `--enforce-eager` |
