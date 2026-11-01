@@ -275,6 +275,15 @@ def start_backend(model_path: str, model_id: str, max_context_length: int | None
     if kv_cache_dtype:
         cmd.extend(["--kv-cache-dtype", kv_cache_dtype])
 
+    # The model's own vllm serve arguments from the catalog (server_args),
+    # such as ["--quantization", "fp8"], as a JSON list of strings.
+    server_args = os.environ.get("SERVER_ARGS")
+    if server_args:
+        extra = json.loads(server_args)
+        if not isinstance(extra, list) or not all(isinstance(a, str) for a in extra):
+            raise RuntimeError(f"SERVER_ARGS must be a JSON list of strings, got {server_args!r}")
+        cmd.extend(extra)
+
     # Eager mode: skip torch.compile + CUDA-graph capture. On bandwidth-bound
     # large models the decode cost is small (decode waits on memory, not kernel
     # launch), but it removes the compile/graph-capture memory peak and startup

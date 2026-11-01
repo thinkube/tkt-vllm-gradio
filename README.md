@@ -54,6 +54,7 @@ The LLM Gateway sets these on the pod when it loads a model:
 | `TENSOR_PARALLEL_SIZE` | `--tensor-parallel-size`, when above 1 |
 | `SPECULATIVE_CONFIG` | `--speculative-config` (JSON); DFlash also sets `--max-num-batched-tokens` and a `bfloat16` KV cache |
 | `ENFORCE_EAGER` | `true` adds `--enforce-eager` |
+| `SERVER_ARGS` | JSON list of strings, the catalog's `server_args` for the model, appended as they are (for example `["--quantization", "fp8"]`) |
 
 Other variables the server reads: `VLLM_MAX_MODEL_LEN`, `KV_CACHE_DTYPE`,
 `VLLM_STRUCTURED_OUTPUTS_CONFIG` (default: xgrammar with no free

@@ -8,6 +8,9 @@ metadata:
   version: "0.1.2"
 
 spec:
+  # vllm-base 0.32.0 exists for amd64 only (thinkube-release DEFECTS-FOUND S3).
+  architectures: [amd64]
+
   deployment:
     type: component
     name: vllm
